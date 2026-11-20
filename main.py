@@ -26,7 +26,7 @@ HEADERS = {"x-apisports-key": API_FOOTBALL_KEY}
 
 LEAGUES = {
     "ucl": {"id": 2, "name": "🏆 Ligue des Champions", "season": 2026},
-    "epl": {"id": 39, "name": "🏴 Premier League", "season": 2026},
+    "epl": {"id": 39, "name": "🇬🇧 Premier League", "season": 2026},
     "laliga": {"id": 140, "name": "🇪🇸 La Liga", "season": 2026},
     "seriea": {"id": 135, "name": "🇮🇹 Serie A", "season": 2026},
     "ligue1": {"id": 61, "name": "🇫🇷 Ligue 1", "season": 2026},
@@ -237,15 +237,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "tips":
         await q.edit_message_text("⏳ Analyse des 3 meilleurs matchs du jour avec l'IA...")
-        today = now_utc.strftime("%Y-%m-%d")
-        fixtures = await api_get("fixtures", {"date": today})
-        top_ids = {v["id"] for v in LEAGUES.values()}
-        upcoming_today = [f for f in fixtures if f["fixture"]["status"]["short"] == "NS"]
-        picked = [f for f in upcoming_today if f["league"]["id"] in top_ids][:3]
-        if len(picked) < 3:
-            picked = (picked + [f for f in upcoming_today if f not in picked])[:3]
+        # FIX: si pas de match aujourd'hui, on prend demain
+        picked = []
+        for day_offset in [0, 1, 2]:
+            d = (now_utc + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            fixtures = await api_get("fixtures", {"date": d})
+            top_ids = {v["id"] for v in LEAGUES.values()}
+            upcoming_day = [f for f in fixtures if f["fixture"]["status"]["short"] == "NS"]
+            picked = [f for f in upcoming_day if f["league"]["id"] in top_ids][:3]
+            if len(picked) < 3:
+                picked = (picked + [f for f in upcoming_day if f not in picked])[:3]
+            if picked:
+                break
         if not picked:
-            await q.edit_message_text("Aucun match à venir aujourd'hui, reviens demain !", reply_markup=main_keyboard())
+            await q.edit_message_text("Aucun match à venir, reviens demain !", reply_markup=main_keyboard())
             return
 
         matches_for_image = []
@@ -292,129 +297,4 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not league:
             return
         await q.edit_message_text(f"⏳ Chargement {league['name']}...")
-        txt = f"📅 <b>À Venir - {league['name']}</b>\n\n"
-        count = 0
-
-        for i in range(14):
-            if count >= 6:
-                break
-            d = (now_utc + timedelta(days=i)).strftime("%Y-%m-%d")
-            fixtures = await api_get("fixtures", {"date": d, "league": league["id"], "season": league["season"]})
-            for f in fixtures:
-                if count >= 6:
-                    break
-                home = f["teams"]["home"]["name"]
-                away = f["teams"]["away"]["name"]
-                pred = await get_gemini_prediction(home, away, league["name"])
-                txt += (
-                    f"🕐 {d} {f['fixture']['date'][11:16]} UTC\n"
-                    f"<b>{html.escape(home)} vs {html.escape(away)}</b>\n"
-                    f"🎯 {html.escape(pred['tip'])} — <i>{html.escape(pred['reason'])}</i>\n\n"
-                )
-                count += 1
-
-        if count == 0:
-            if key in ["worldcup", "afcon"]:
-                txt += "🏆 Ce tournoi est terminé. Prochaine édition bientôt.\nRegardez les Matchs Amicaux Internationaux à la place."
-            else:
-                txt += "⏸️ Aucun match dans les 14 prochains jours - Le championnat est en pause Trêve Internationale.\nRegardez les Matchs Amicaux Internationaux 🌍"
-        txt += DISCLAIMER
-        await q.edit_message_text(txt[:4000], reply_markup=upcoming_keyboard(), parse_mode="HTML")
-        return
-
-    if data == "search_help":
-        await q.edit_message_text(
-            "🔍 Tape juste dans le chat :\n\n<code>Arsenal vs Chelsea</code>\n\n"
-            "Je vais chercher le score / l'heure du coup d'envoi et le prono IA.",
-            reply_markup=main_keyboard(),
-            parse_mode="HTML",
-        )
-        return
-
-    if data == "stats_help":
-        await q.edit_message_text(
-            "📊 Pour avoir l'historique Face-à-Face, tape :\n\n<code>Stats Arsenal vs Chelsea</code>",
-            reply_markup=main_keyboard(),
-            parse_mode="HTML",
-        )
-        return
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if " vs " not in text.lower():
-        await update.message.reply_text("Tape un match comme : <b>Arsenal vs Chelsea</b>", reply_markup=main_keyboard(), parse_mode="HTML")
-        return
-
-    is_stats = text.lower().startswith("stats")
-    clean = text.lower().replace("stats", "").strip()
-    parts = clean.split(" vs ")
-    if len(parts) != 2:
-        await update.message.reply_text("Utilise le format : <code>Equipe1 vs Equipe2</code>", reply_markup=main_keyboard(), parse_mode="HTML")
-        return
-
-    home_q, away_q = parts[0].strip(), parts[1].strip()
-    status_msg = await update.message.reply_text(f"⏳ Recherche {html.escape(home_q.title())} vs {html.escape(away_q.title())}...")
-
-    found = None
-    now_utc = datetime.now(timezone.utc)
-    for offset in [0, 1, 2, 3, 4, 5, 6, 7, -1]:
-        d = (now_utc + timedelta(days=offset)).strftime("%Y-%m-%d")
-        fixtures = await api_get("fixtures", {"date": d})
-        for f in fixtures:
-            h = f["teams"]["home"]["name"].lower()
-            a = f["teams"]["away"]["name"].lower()
-            if (home_q in h or h in home_q) and (away_q in a or a in away_q):
-                found = f
-                break
-        if found:
-            break
-
-    if not found:
-        await status_msg.edit_text(
-            "❌ Match introuvable dans les 8 prochains jours. Essaie les noms complets (ex : <i>Manchester City vs Liverpool</i>).",
-            reply_markup=main_keyboard(),
-            parse_mode="HTML",
-        )
-        return
-
-    home = found["teams"]["home"]["name"]
-    away = found["teams"]["away"]["name"]
-    league = found["league"]["name"]
-    score_txt = format_match(found)
-
-    h2h_txt = ""
-    if is_stats:
-        h_id = found["teams"]["home"]["id"]
-        a_id = found["teams"]["away"]["id"]
-        h2h_matches = await api_get("fixtures/headtohead", {"h2h": f"{h_id}-{a_id}", "last": 5})
-        if h2h_matches:
-            h2h_lines = [
-                f"• {m['fixture']['date'][:10]}: {html.escape(m['teams']['home']['name'])} {m['goals']['home']}-{m['goals']['away']} {html.escape(m['teams']['away']['name'])}"
-                for m in h2h_matches
-            ]
-            h2h_txt = "\n\n📊 <b>Les 5 Derniers Face-à-Face :</b>\n" + "\n".join(h2h_lines)
-
-    pred = await get_gemini_prediction(home, away, league)
-    reply = (
-        f"{score_txt}"
-        f"{h2h_txt}\n\n"
-        f"🎯 <b>Analyse IA :</b>\n"
-        f"✅ <b>Prono :</b> {html.escape(pred['tip'])} ({html.escape(pred['confidence'])})\n"
-        f"💡 <i>{html.escape(pred['reason'])}</i>"
-        f"{DISCLAIMER}"
-    )
-    await status_msg.edit_text(reply[:4000], reply_markup=main_keyboard(), parse_mode="HTML")
-
-def main():
-    if not TELEGRAM_TOKEN:
-        raise ValueError("TELEGRAM_TOKEN environment variable is missing!")
-    keep_alive()
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("EFFA PRONOSS Bot is running...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+        # FIX PRINCIPAL: utiliser "next" au lieu de boucle date+
