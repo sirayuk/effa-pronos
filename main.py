@@ -26,7 +26,7 @@ HEADERS = {"x-apisports-key": API_FOOTBALL_KEY}
 
 LEAGUES = {
     "ucl": {"id": 2, "name": "🏆 Ligue des Champions", "season": 2026},
-    "epl": {"id": 39, "name": "🇬🇧 Premier League", "season": 2026},
+    "epl": {"id": 39, "name": "🏴 Premier League", "season": 2026},
     "laliga": {"id": 140, "name": "🇪🇸 La Liga", "season": 2026},
     "seriea": {"id": 135, "name": "🇮🇹 Serie A", "season": 2026},
     "ligue1": {"id": 61, "name": "🇫🇷 Ligue 1", "season": 2026},
@@ -43,7 +43,6 @@ logger = logging.getLogger(__name__)
 
 DISCLAIMER = "\n\n⚠️ <i>18+ | Pour divertissement uniquement. Les pronostics sont des analyses, pas des garanties. Jouez de manière responsable.</i>"
 
-# Structured output schema for Gemini predictions
 class MatchPrediction(BaseModel):
     tip: str
     confidence: str
@@ -55,7 +54,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"EFFA PRONOSS Bot is alive!")
-
     def log_message(self, format, *args):
         pass
 
@@ -88,7 +86,6 @@ def format_match(f: dict) -> str:
     minute = f["fixture"]["status"]["elapsed"]
     date = f["fixture"]["date"][:16].replace("T", " ")
     league = html.escape(f["league"]["name"])
-
     if status in ["FT", "AET", "PEN"]:
         return f"✅ <b>TERMINÉ</b> | {league}\n{home} <b>{goals_h} - {goals_a}</b> {away}"
     elif status in ["1H", "2H", "HT", "ET", "BT", "P"]:
@@ -135,17 +132,14 @@ def _sync_create_tips_image(matches: list) -> BytesIO:
     img = Image.new("RGB", (W, H), (10, 45, 32))
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, 0, W, 150], fill=(212, 175, 55))
-
     try:
         font_big = ImageFont.truetype("DejaVuSans-Bold.ttf", 52)
         font_med = ImageFont.truetype("DejaVuSans-Bold.ttf", 34)
         font_small = ImageFont.truetype("DejaVuSans.ttf", 28)
     except Exception:
         font_big = font_med = font_small = ImageFont.load_default()
-
     draw.text((W // 2, 75), "EFFA PRONOSS - 3 PRONOS DU JOUR", font=font_big, fill=(10, 45, 32), anchor="mm")
     y = 180
-
     for m in matches:
         draw.rounded_rectangle([40, y, W - 40, y + 360], radius=25, fill=(255, 255, 255))
         draw.text((70, y + 25), m["league"][:35], font=font_small, fill=(100, 100, 100))
@@ -153,10 +147,8 @@ def _sync_create_tips_image(matches: list) -> BytesIO:
         draw.text((70, y + 125), "vs", font=font_small, fill=(100, 100, 100))
         draw.text((70, y + 165), m["away"][:24], font=font_med, fill=(0, 0, 0))
         draw.text((70, y + 240), f"🕐 {m['time']} UTC", font=font_small, fill=(0, 0, 0))
-
         draw.rounded_rectangle([540, y + 220, W - 70, y + 305], radius=15, fill=(34, 139, 34))
         draw.text((775, y + 262), f"✅ {m['tip']}", font=font_med, fill=(255, 255, 255), anchor="mm")
-
         for idx, logo_url in enumerate([m.get("home_logo"), m.get("away_logo")]):
             if logo_url:
                 try:
@@ -166,7 +158,6 @@ def _sync_create_tips_image(matches: list) -> BytesIO:
                 except Exception:
                     pass
         y += 390
-
     draw.text((W // 2, H - 40), "18+ | Divertissement Uniquement | Jouez Responsablement", font=font_small, fill=(255, 255, 255), anchor="mm")
     bio = BytesIO()
     bio.name = "tips.jpg"
@@ -237,31 +228,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "tips":
         await q.edit_message_text("⏳ Analyse des 3 meilleurs matchs du jour avec l'IA...")
-        # FIX: si pas de match aujourd'hui, on prend demain
-        picked = []
-        for day_offset in [0, 1, 2]:
-            d = (now_utc + timedelta(days=day_offset)).strftime("%Y-%m-%d")
-            fixtures = await api_get("fixtures", {"date": d})
-            top_ids = {v["id"] for v in LEAGUES.values()}
-            upcoming_day = [f for f in fixtures if f["fixture"]["status"]["short"] == "NS"]
-            picked = [f for f in upcoming_day if f["league"]["id"] in top_ids][:3]
-            if len(picked) < 3:
-                picked = (picked + [f for f in upcoming_day if f not in picked])[:3]
-            if picked:
-                break
+        today = now_utc.strftime("%Y-%m-%d")
+        fixtures = await api_get("fixtures", {"date": today})
+        top_ids = {v["id"] for v in LEAGUES.values()}
+        upcoming_today = [f for f in fixtures if f["fixture"]["status"]["short"] == "NS"]
+        picked = [f for f in upcoming_today if f["league"]["id"] in top_ids][:3]
+        if len(picked) < 3:
+            picked = (picked + [f for f in upcoming_today if f not in picked])[:3]
         if not picked:
-            await q.edit_message_text("Aucun match à venir, reviens demain !", reply_markup=main_keyboard())
+            await q.edit_message_text("Aucun match à venir aujourd'hui, reviens demain !", reply_markup=main_keyboard())
             return
-
         matches_for_image = []
         txt = "🎯 <b>3 PRONOS GRATUITS DU JOUR - EFFA PRONOSS</b>\n\n"
-
-        for f in picked:
+        # FIX: Gemini in parallel, not one by one - much faster, no timeout box
+        preds = await asyncio.gather(*[get_gemini_prediction(f["teams"]["home"]["name"], f["teams"]["away"]["name"], f["league"]["name"]) for f in picked])
+        for f, pred in zip(picked, preds):
             home = f["teams"]["home"]["name"]
             away = f["teams"]["away"]["name"]
             league = f["league"]["name"]
-            pred = await get_gemini_prediction(home, away, league)
-
             txt += (
                 f"🏆 <b>{html.escape(league)}</b>\n"
                 f"{html.escape(home)} vs {html.escape(away)}\n"
@@ -269,26 +253,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💡 <i>{html.escape(pred['reason'])}</i>\n\n"
             )
             matches_for_image.append({
-                "home": home,
-                "away": away,
-                "league": league,
-                "time": f["fixture"]["date"][11:16],
-                "tip": pred["tip"],
-                "home_logo": f["teams"]["home"]["logo"],
-                "away_logo": f["teams"]["away"]["logo"],
+                "home": home, "away": away, "league": league,
+                "time": f["fixture"]["date"][11:16], "tip": pred["tip"],
+                "home_logo": f["teams"]["home"]["logo"], "away_logo": f["teams"]["away"]["logo"],
             })
-
         txt += DISCLAIMER
         try:
             img = await asyncio.to_thread(_sync_create_tips_image, matches_for_image)
             await q.message.reply_photo(photo=img, caption=txt[:1024], reply_markup=main_keyboard(), parse_mode="HTML")
         except Exception as e:
             logger.error(f"Image error: {e}")
-            await q.message.reply_text(txt[:4000], reply_markup=main_keyboard(), parse_mode="HTML")
+            # FIX BOX: if image fails, send text only, never crash
+            try:
+                await q.message.reply_text(txt[:4000], reply_markup=main_keyboard(), parse_mode="HTML")
+            except Exception:
+                await q.message.reply_text("Erreur image, voici les pronos en texte.", reply_markup=main_keyboard())
         return
 
     if data == "upcoming_menu":
-        await q.edit_message_text("📅 Choisis un championnat pour les matchs à venir (14 prochains jours) :", reply_markup=upcoming_keyboard())
+        await q.edit_message_text("📅 Choisis un championnat pour les matchs à venir :", reply_markup=upcoming_keyboard())
         return
 
     if data.startswith("upcoming_"):
@@ -297,4 +280,116 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not league:
             return
         await q.edit_message_text(f"⏳ Chargement {league['name']}...")
-        # FIX PRINCIPAL: utiliser "next" au lieu de boucle date+
+        # ✅ FIX PRINCIPAL: utiliser "next" au lieu de boucle date+14 jours
+        # 1 seul appel API = instant, pas de timeout
+        fixtures = await api_get("fixtures", {"league": league["id"], "season": league["season"], "next": 6})
+        txt = f"📅 <b>À Venir - {league['name']}</b>\n\n"
+        if not fixtures:
+            if key in ["worldcup", "afcon"]:
+                txt += "🏆 Ce tournoi est terminé. Prochaine édition bientôt.\nRegardez les Matchs Amicaux Internationaux à la place."
+            else:
+                txt += "⏸️ Aucun match à venir - Le championnat est en pause Trêve Internationale.\nRegardez les Matchs Amicaux Internationaux 🌍"
+        else:
+            # Gemini in parallel for all 6
+            preds = await asyncio.gather(*[get_gemini_prediction(f["teams"]["home"]["name"], f["teams"]["away"]["name"], league["name"]) for f in fixtures[:6]])
+            for f, pred in zip(fixtures[:6], preds):
+                home = f["teams"]["home"]["name"]
+                away = f["teams"]["away"]["name"]
+                d = f["fixture"]["date"][:10]
+                t = f["fixture"]["date"][11:16]
+                txt += (
+                    f"🕐 {d} {t} UTC\n"
+                    f"<b>{html.escape(home)} vs {html.escape(away)}</b>\n"
+                    f"🎯 {html.escape(pred['tip'])} — <i>{html.escape(pred['reason'])}</i>\n\n"
+                )
+        txt += DISCLAIMER
+        # FIX BOX: edit can fail if message too long / same text
+        try:
+            await q.edit_message_text(txt[:4000], reply_markup=upcoming_keyboard(), parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Edit failed, sending new msg: {e}")
+            await q.message.reply_text(txt[:4000], reply_markup=upcoming_keyboard(), parse_mode="HTML")
+        return
+
+    if data == "search_help":
+        await q.edit_message_text("🔍 Tape juste dans le chat :\n\n<code>Arsenal vs Chelsea</code>\n\nJe vais chercher le score / l'heure du coup d'envoi et le prono IA.", reply_markup=main_keyboard(), parse_mode="HTML")
+        return
+
+    if data == "stats_help":
+        await q.edit_message_text("📊 Pour avoir l'historique Face-à-Face, tape :\n\n<code>Stats Arsenal vs Chelsea</code>", reply_markup=main_keyboard(), parse_mode="HTML")
+        return
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if " vs " not in text.lower():
+        await update.message.reply_text("Tape un match comme : <b>Arsenal vs Chelsea</b>", reply_markup=main_keyboard(), parse_mode="HTML")
+        return
+    is_stats = text.lower().startswith("stats")
+    clean = text.lower().replace("stats", "").strip()
+    parts = clean.split(" vs ")
+    if len(parts) != 2:
+        await update.message.reply_text("Utilise le format : <code>Equipe1 vs Equipe2</code>", reply_markup=main_keyboard(), parse_mode="HTML")
+        return
+    home_q, away_q = parts[0].strip(), parts[1].strip()
+    status_msg = await update.message.reply_text(f"⏳ Recherche {html.escape(home_q.title())} vs {html.escape(away_q.title())}...")
+    found = None
+    now_utc = datetime.now(timezone.utc)
+    # FIX: search with next + date range in fewer calls
+    for offset in [0, 1, 2, 3, 4, 5, 6, 7, -1]:
+        d = (now_utc + timedelta(days=offset)).strftime("%Y-%m-%d")
+        fixtures = await api_get("fixtures", {"date": d})
+        for f in fixtures:
+            h = f["teams"]["home"]["name"].lower()
+            a = f["teams"]["away"]["name"].lower()
+            if (home_q in h or h in home_q) and (away_q in a or a in away_q):
+                found = f
+                break
+        if found:
+            break
+    if not found:
+        await status_msg.edit_text("❌ Match introuvable dans les 8 prochains jours. Essaie les noms complets (ex : <i>Manchester City vs Liverpool</i>).", reply_markup=main_keyboard(), parse_mode="HTML")
+        return
+    home = found["teams"]["home"]["name"]
+    away = found["teams"]["away"]["name"]
+    league = found["league"]["name"]
+    score_txt = format_match(found)
+    h2h_txt = ""
+    if is_stats:
+        h_id = found["teams"]["home"]["id"]
+        a_id = found["teams"]["away"]["id"]
+        h2h_matches = await api_get("fixtures/headtohead", {"h2h": f"{h_id}-{a_id}", "last": 5})
+        if h2h_matches:
+            h2h_lines = [f"• {m['fixture']['date'][:10]}: {html.escape(m['teams']['home']['name'])} {m['goals']['home']}-{m['goals']['away']} {html.escape(m['teams']['away']['name'])}" for m in h2h_matches]
+            h2h_txt = "\n\n📊 <b>Les 5 Derniers Face-à-Face :</b>\n" + "\n".join(h2h_lines)
+    pred = await get_gemini_prediction(home, away, league)
+    reply = (
+        f"{score_txt}"
+        f"{h2h_txt}\n\n"
+        f"🎯 <b>Analyse IA :</b>\n"
+        f"✅ <b>Prono :</b> {html.escape(pred['tip'])} ({html.escape(pred['confidence'])})\n"
+        f"💡 <i>{html.escape(pred['reason'])}</i>"
+        f"{DISCLAIMER}"
+    )
+    await status_msg.edit_text(reply[:4000], reply_markup=main_keyboard(), parse_mode="HTML")
+
+def main():
+    if not TELEGRAM_TOKEN:
+        raise ValueError("TELEGRAM_TOKEN environment variable is missing!")
+    keep_alive()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    print("EFFA PRONOSS Bot is running...", flush=True)
+    app.run_polling()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print(f"❌ BOT CRASHED: {e}", flush=True)
+        traceback.print_exc()
+        import time
+        print("Waiting 60s to show error...", flush=True)
+        time.sleep(60)
