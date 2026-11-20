@@ -30,6 +30,7 @@ LEAGUES = {
     "laliga": {"id": 140, "name": "🇪🇸 La Liga", "season": 2026},
     "seriea": {"id": 135, "name": "🇮🇹 Serie A", "season": 2026},
     "ligue1": {"id": 61, "name": "🇫🇷 Ligue 1", "season": 2026},
+    "bundesliga": {"id": 78, "name": "🇩🇪 Bundesliga", "season": 2026},
     "friendlies": {"id": 667, "name": "🌍 Matchs Amicaux Internationaux", "season": 2026},
     "wcq_africa": {"id": 36, "name": "🏆 Qualif. Coupe du Monde - Afrique", "season": 2026},
     "afcon": {"id": 6, "name": "🌍 Coupe d'Afrique des Nations", "season": 2025},
@@ -198,11 +199,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data = q.data
     now_utc = datetime.now(timezone.utc)
-
     if data == "menu":
         await q.edit_message_text("Choisis une option 👇", reply_markup=main_keyboard())
         return
-
     if data == "live":
         await q.edit_message_text("⏳ Récupération des scores en direct...")
         fixtures = await api_get("fixtures", {"live": "all"})
@@ -212,7 +211,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = "🔴 <b>EN DIRECT MAINTENANT</b>\n\n" + "\n\n".join([format_match(f) for f in fixtures[:15]])
         await q.edit_message_text(txt[:4000], reply_markup=main_keyboard(), parse_mode="HTML")
         return
-
     if data == "results":
         await q.edit_message_text("⏳ Récupération des résultats d'hier...")
         yesterday = (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -225,7 +223,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = f"🏆 <b>Résultats - {yesterday}</b>\n\n" + "\n\n".join([format_match(f) for f in filtered[:15]])
         await q.edit_message_text(txt[:4000], reply_markup=main_keyboard(), parse_mode="HTML")
         return
-
     if data == "tips":
         await q.edit_message_text("⏳ Analyse des 3 meilleurs matchs du jour avec l'IA...")
         today = now_utc.strftime("%Y-%m-%d")
@@ -240,7 +237,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         matches_for_image = []
         txt = "🎯 <b>3 PRONOS GRATUITS DU JOUR - EFFA PRONOSS</b>\n\n"
-        # FIX: Gemini in parallel, not one by one - much faster, no timeout box
         preds = await asyncio.gather(*[get_gemini_prediction(f["teams"]["home"]["name"], f["teams"]["away"]["name"], f["league"]["name"]) for f in picked])
         for f, pred in zip(picked, preds):
             home = f["teams"]["home"]["name"]
@@ -263,34 +259,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_photo(photo=img, caption=txt[:1024], reply_markup=main_keyboard(), parse_mode="HTML")
         except Exception as e:
             logger.error(f"Image error: {e}")
-            # FIX BOX: if image fails, send text only, never crash
             try:
                 await q.message.reply_text(txt[:4000], reply_markup=main_keyboard(), parse_mode="HTML")
             except Exception:
                 await q.message.reply_text("Erreur image, voici les pronos en texte.", reply_markup=main_keyboard())
         return
-
     if data == "upcoming_menu":
         await q.edit_message_text("📅 Choisis un championnat pour les matchs à venir :", reply_markup=upcoming_keyboard())
         return
-
     if data.startswith("upcoming_"):
         key = data.replace("upcoming_", "")
         league = LEAGUES.get(key)
         if not league:
             return
         await q.edit_message_text(f"⏳ Chargement {league['name']}...")
-        # ✅ FIX PRINCIPAL: utiliser "next" au lieu de boucle date+14 jours
-        # 1 seul appel API = instant, pas de timeout
-        fixtures = await api_get("fixtures", {"league": league["id"], "season": league["season"], "next": 6})
+        # FIX MATCHS AMICAUX: Friendlies + Tournois = search by date, Clubs = next=6
+        fixtures = []
+        if key in ["friendlies", "wcq_africa", "afcon", "worldcup"]:
+            for offset in range(0, 8):
+                d = (now_utc + timedelta(days=offset)).strftime("%Y-%m-%d")
+                day_fixtures = await api_get("fixtures", {"date": d, "league": league["id"], "season": league["season"]})
+                fixtures.extend(day_fixtures)
+                if len(fixtures) >= 6:
+                    break
+            if not fixtures:
+                for offset in range(0, 8):
+                    d = (now_utc + timedelta(days=offset)).strftime("%Y-%m-%d")
+                    day_fixtures = await api_get("fixtures", {"date": d, "league": league["id"], "season": 2025})
+                    fixtures.extend(day_fixtures)
+                    if len(fixtures) >= 6:
+                        break
+            fixtures = fixtures[:6]
+        else:
+            fixtures = await api_get("fixtures", {"league": league["id"], "season": league["season"], "next": 6})
         txt = f"📅 <b>À Venir - {league['name']}</b>\n\n"
         if not fixtures:
             if key in ["worldcup", "afcon"]:
                 txt += "🏆 Ce tournoi est terminé. Prochaine édition bientôt.\nRegardez les Matchs Amicaux Internationaux à la place."
+            elif key == "friendlies":
+                txt += "🌍 Aucun match amical dans les 8 prochains jours.\nEssaie les Qualif. Coupe du Monde - Afrique 🏆"
             else:
                 txt += "⏸️ Aucun match à venir - Le championnat est en pause Trêve Internationale.\nRegardez les Matchs Amicaux Internationaux 🌍"
         else:
-            # Gemini in parallel for all 6
             preds = await asyncio.gather(*[get_gemini_prediction(f["teams"]["home"]["name"], f["teams"]["away"]["name"], league["name"]) for f in fixtures[:6]])
             for f, pred in zip(fixtures[:6], preds):
                 home = f["teams"]["home"]["name"]
@@ -303,18 +313,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🎯 {html.escape(pred['tip'])} — <i>{html.escape(pred['reason'])}</i>\n\n"
                 )
         txt += DISCLAIMER
-        # FIX BOX: edit can fail if message too long / same text
         try:
             await q.edit_message_text(txt[:4000], reply_markup=upcoming_keyboard(), parse_mode="HTML")
         except Exception as e:
             logger.error(f"Edit failed, sending new msg: {e}")
             await q.message.reply_text(txt[:4000], reply_markup=upcoming_keyboard(), parse_mode="HTML")
         return
-
     if data == "search_help":
         await q.edit_message_text("🔍 Tape juste dans le chat :\n\n<code>Arsenal vs Chelsea</code>\n\nJe vais chercher le score / l'heure du coup d'envoi et le prono IA.", reply_markup=main_keyboard(), parse_mode="HTML")
         return
-
     if data == "stats_help":
         await q.edit_message_text("📊 Pour avoir l'historique Face-à-Face, tape :\n\n<code>Stats Arsenal vs Chelsea</code>", reply_markup=main_keyboard(), parse_mode="HTML")
         return
@@ -334,7 +341,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text(f"⏳ Recherche {html.escape(home_q.title())} vs {html.escape(away_q.title())}...")
     found = None
     now_utc = datetime.now(timezone.utc)
-    # FIX: search with next + date range in fewer calls
     for offset in [0, 1, 2, 3, 4, 5, 6, 7, -1]:
         d = (now_utc + timedelta(days=offset)).strftime("%Y-%m-%d")
         fixtures = await api_get("fixtures", {"date": d})
