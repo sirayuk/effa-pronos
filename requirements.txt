@@ -1,5 +1,5 @@
 python-telegram-bot>=21.0
-requests
-Pillow
-google-genai
-pydantic
+google-genai>=1.0.0
+requests>=2.31.0
+pillow>=10.0.0
+pydantic>=2.0.0
